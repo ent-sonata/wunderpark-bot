@@ -8,6 +8,7 @@ import requests
 import threading
 import os
 import time
+import hashlib
 
 import xml.etree.ElementTree as ET
 
@@ -69,7 +70,7 @@ def format_date(date_str):
         return date_str
 
 def format_datetime_calendar(dt):
-    """Конвертирования даты в нужный формат для календаря"""
+    """Конвертирования даты в нужный формат для календаря без года"""
     try:
         if isinstance(dt, str):
             dt = datetime.fromisoformat(dt)
@@ -79,6 +80,23 @@ def format_datetime_calendar(dt):
         time = dt.strftime("%H:%M")
 
         return f"{day} {month}", time
+
+    except Exception as e:
+        print(f"Ошибка форматирования даты: {e}")
+        return None, None
+
+def format_full_datetime_calendar(dt):
+    """Конвертирования даты в нужный формат для календаря с годом"""
+    try:
+        if isinstance(dt, str):
+            dt = datetime.fromisoformat(dt)
+
+        day = dt.day
+        month = months[dt.month]
+        year = dt.year
+        time = dt.strftime("%H:%M")
+
+        return f"{day} {month} {year} года", time
 
     except Exception as e:
         print(f"Ошибка форматирования даты: {e}")
@@ -94,43 +112,49 @@ def is_start_command(message):
 
 
 # UPDATE USERS
+import pymysql
+
 def update_user_data(user):
     """Добавление/обновление пользователей в БД"""
     try:
         connection = pymysql.connect(**db_config)
 
         with connection.cursor() as cursor:
-            sql_check_query = "SELECT id FROM registrations WHERE name = %s AND event = %s"
-            cursor.execute(sql_check_query, (user['name'], user['event']))
+            # Проверяем, есть ли пользователь с таким chat_id и event
+            sql_check_query = "SELECT id FROM registrations WHERE chat_id = %s AND event = %s"
+            cursor.execute(sql_check_query, (user['chat_id'], user['event']))  # Исправлено: теперь передаётся chat_id
             existing_user = cursor.fetchone()
 
             if existing_user:
+                # Обновляем данные, если пользователь уже есть
                 sql_update_query = """
                 UPDATE registrations 
-                SET phone = %s, email = %s, participation = %s, track = %s, sections = %s, 
-                    status = %s, chat_id = %s, location = %s, date_event = %s, time_event = %s 
-                WHERE name = %s AND event = %s
+                SET name = %s, phone = %s, email = %s, participation = %s, track = %s, sections = %s, 
+                    status = %s, location = %s, date_event = %s, time_event = %s, transport = %s  
+                WHERE chat_id = %s AND event = %s
                 """
                 data_tuple = (
+                    user['name'],
                     user['phone'],
                     user['email'],
                     user['participation'],
                     user['track'],
                     user['sections'],
                     user['status'],
-                    user['chat_id'],
                     user['location'],
                     user['date_event'],
                     user['time_event'],
-                    user['name'],
-                    user['event']
+                    user['transport'],
+                    user['chat_id'],  # WHERE chat_id = %s
+                    user['event']      # AND event = %s
                 )
                 cursor.execute(sql_update_query, data_tuple)
-                print(f"✅ Данные пользователя {user['name']} обновлены для события '{user['event']}'.")
+                print(f"✅ Данные пользователя {user['name']} (chat_id={user['chat_id']}) обновлены для события '{user['event']}'.")
             else:
+                # Добавляем нового пользователя, если его нет
                 sql_insert_query = """
-                INSERT INTO registrations (name, phone, email, participation, track, sections, status, created_at, chat_id, event, location, date_event, time_event)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO registrations (name, phone, email, participation, track, sections, status, created_at, chat_id, event, location, date_event, time_event, transport)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 data_tuple = (
                     user['name'],
@@ -145,20 +169,17 @@ def update_user_data(user):
                     user['event'],
                     user['location'],
                     user['date_event'],
-                    user['time_event']
+                    user['time_event'],
+                    user['transport']
                 )
                 cursor.execute(sql_insert_query, data_tuple)
-                print(f"✅ Новый пользователь {user['name']} добавлен для события '{user['event']}'.")
+                print(f"✅ Новый пользователь {user['name']} (chat_id={user['chat_id']}) добавлен для события '{user['event']}'.")
 
             connection.commit()
-
     except Exception as e:
-        print(f"⚠️ Ошибка при работе с MySQL: {e}")
-        print(f"Данные, вызвавшие ошибку: {user}")
-
+        print(f"❌ Ошибка при обновлении/добавлении данных: {e}")
     finally:
-        if 'connection' in locals() and connection:
-            connection.close()
+        connection.close()
 
 
 
@@ -268,7 +289,7 @@ def get_today_events():
 
 
 
-# GET CHAT ID AND USER STATUS
+# GET CHAT ID AND USER DATA
 def get_check_values():
     """Получаем айди чата в боте и статус регистрации пользователя"""
     conn = pymysql.connect(**db_config)
@@ -279,6 +300,28 @@ def get_check_values():
 
     conn.close()
     return chat_data
+
+def get_track(chat_id):
+    """Получаем трек по chat_id"""
+    conn = pymysql.connect(**db_config)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT track FROM registrations WHERE chat_id = %s", (chat_id,))
+    result = cursor.fetchone()
+
+    conn.close()
+    return result[0] if result else None
+
+def get_participation(chat_id):
+    """Получаем формат участия по chat_id"""
+    conn = pymysql.connect(**db_config)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT participation FROM registrations WHERE chat_id = %s", (chat_id,))
+    result = cursor.fetchone()
+
+    conn.close()
+    return result[0] if result else None
 
 
 
@@ -339,37 +382,124 @@ def send_survey(chat_id, event_name):
 def send_reminder_messages(event, label):
     """Отправляем напоминание о предстоящем мероприятии"""
     chat_data = get_check_values()
+
     confirmed_chat_ids = [chat_id for chat_id, status in chat_data if status == "Confirmed"]
 
     if event:
-
         date, time = format_datetime_calendar(event["datetime"])
 
-        if label in ["week"]:
-            message = (f"Информируем, что совсем скоро будет проходить мероприятие, на которое Вы зарегистрировались:\n\n"
-                       f"*{event['name']}*\n\n"
-                       f"📅 *Дата:* {date}\n\n"
-                       f"🕒 *Время:* {time}\n\n"
-                       f"📍 *Место:* {event['location']}")
-
-        elif label in ["one_day"]:
-            message = (f"Уже завтра мероприятие *{event['name']}!*\n\n"
-                       f"🕒 *Время:* {time}\n\n"
-                       f"📍 *Место:* {event['location']}")
-
-        maps_link = get_yandex_maps_link(event['location'])
-        markup = types.InlineKeyboardMarkup()
-        btn_map = types.InlineKeyboardButton("Посмотреть на карте", url=maps_link)
-        markup.add(btn_map)
-
         for chat_id in confirmed_chat_ids:
-            try:
-                bot.send_message(chat_id, message, reply_markup=markup, parse_mode="Markdown")
-            except Exception as e:
-                print(f"Ошибка при отправке сообщения пользователю {chat_id}: {e}")
+            message, markup = "", None
+
+            if label == "week":
+                message = (f"Привет!\n"
+                           f"Напоминаю, что Вы зарегистрировались на Научно-практическую конференцию *{event['name']}*, "
+                           f"которая состоится в *{event['location']} {date}*. \n\n"
+                           f"🕒 *Начало мероприятия:* {time}\n\n"
+                           f"Этот день определенно будет насыщенным! Поговорим о главных вызовах современной модели образования с ТОП-экспертами, "
+                           f"опробуем новые методики, познакомимся с искусственным интеллектом, посетим книжную ярмарку и по-новому взглянем на просмотр кино!\n\n"
+                           f"Среди спикеров — директора инновационных школ России, профессиональные конфликтологи и психологи, "
+                           f"эксперты в области предпринимательства для школьников, заслуженные педагоги и многие другие!\n\n"
+                           f"Подробнее обо всем, включая тайминг и темы докладов, смотрите в нашей программе.\n\n"
+                           f"Отличного дня и Wunder-настроения!")
+
+                markup = types.InlineKeyboardMarkup()
+                btn_map = types.InlineKeyboardButton("Ссылка на программу", url="https://wunderpark.ru")
+                markup.add(btn_map)
+
+            elif label == "one_day":
+                message = (f"Привет! Уже завтра большая Wunder-конференция! \n\n"
+                           f"Ждем Ваc в *{event['location']}:* c *9:30*\n"
+                           f"Приходите заранее — будет время взять именной бейджик участника у наших администраторов, "
+                           f"пообщаться с коллегами и познакомиться с единомышленниками!\n\n"
+                           f"Начнем в *{time}* в атриуме школы.\n\n"
+                           f"До встречи!\n\n"
+                           f"📍 *Адрес:* Wunderpark International School, д Борзые, д 1\n"
+                           f"🕒 *Начало регистрации:* 9:30")
+
+                maps_link = get_yandex_maps_link(event['location'])
+                markup = types.InlineKeyboardMarkup()
+                btn_map = types.InlineKeyboardButton("Карта", url=maps_link)
+                markup.add(btn_map)
+
+            elif label == "today":
+                event = get_nearest_event()
+
+                if event:
+                    sections = event['description'].strip().split('\n\n')
+
+                    teacher_online_sections = []
+                    parent_online_sections = []
+
+                    category = None
+
+                    for section in sections:
+                        if "(Онлайн учительский)" in section:
+                            category = "Онлайн учительский"
+                        elif "(Онлайн родительский)" in section:
+                            category = "Онлайн родительский"
+
+                        if category == "Онлайн учительский":
+                            clean_section = section.replace("(Онлайн учительский)", "").strip()
+                            teacher_online_sections.append(clean_section)
+                        elif category == "Онлайн родительский":
+                            clean_section = section.replace("(Онлайн родительски)", "").strip()
+                            parent_online_sections.append(clean_section)
+
+                    track = get_track(chat_id)
+                    formate = get_participation(chat_id)
+
+                    sections_to_send = []
+
+                    if formate == "Онлайн":
+                        if track == "Учительский":
+                            sections_to_send = teacher_online_sections
+                        elif track == "Родительский":
+                            sections_to_send = parent_online_sections
+                        else:
+                            sections_to_send = []
+
+                    if sections_to_send:
+                        markup = types.InlineKeyboardMarkup(row_width=1)
+
+                        for section in sections_to_send:
+                            section_block = section.split('\n\n')
+
+                            for section_stroke in section_block:
+                                section_lines = section_stroke.split('\n')
+
+                                if not section_lines:
+                                    continue
+
+                                first_line = section_lines[0] # Название
+                                second_line = section_lines[1] if len(section_lines) > 1 else "" # Текст
+                                second_line = re.split(r"\s+(?=http)", second_line)[0]
+                                link_line = next((line for line in reversed(section_lines) if line.startswith("http")), "") # Ссылка
+
+                                if not second_line.strip():
+                                    continue
+
+                                btn = types.InlineKeyboardButton(
+                                    generate_button_text(first_line, second_line),
+                                    url=link_line
+                                )
+
+                                markup.add(btn)
+
+                                if formate == "Онлайн":
+                                    message = (f"Привет! Сегодня начинается большая Wunder-конференция! 🎉\n\n"
+                                               f"🕒 *Начало мероприятия:* {time}\n\n"
+                                               f"Приятного просмотра!\n"
+                                               f"Вот секции, на которые Вы записались:")
+
+            if message:
+                try:
+                    bot.send_message(chat_id, message, reply_markup=markup, parse_mode="Markdown")
+                except Exception as e:
+                    print(f"Ошибка при отправке сообщения пользователю {chat_id}: {e}")
 
 def send_event_reminders():
-    """Проверяем, есть ли события, которые начинаются через 7 дней, 1 день или 10 минут"""
+    """Проверяем, есть ли события, которые начинаются через 7 дней, 1 день, за 4 часа или 10 минут"""
     get_all_events()
     event = get_nearest_event()
 
@@ -378,7 +508,8 @@ def send_event_reminders():
         reminder_intervals = {
             "week": timedelta(days=7),
             "one_day": timedelta(days=1),
-            "test_second": timedelta(minutes=10)
+            "today": timedelta(hours=4),
+            "test": timedelta(minutes=10)
         }
 
         event_time = event["datetime"]
@@ -391,7 +522,6 @@ def send_event_reminders():
 
     else:
         print("Нет запланированных мероприятий.")
-
 
 def schedule_checker():
     """Запускаем планировщик для напоминаний в отдельном потоке"""
@@ -407,22 +537,21 @@ def start(message):
     chat_id = message.chat.id
 
     user_data[chat_id] = {}
-    user_selections[chat_id] = {"participation": False, "track": False, "sections": False}
+    user_selections[chat_id] = {"participation": False, "track": False, "sections": False, "transport": False}
     bot.clear_step_handler_by_chat_id(chat_id)
 
     get_all_events()
     event = get_nearest_event()
 
     if event:
-        date, time = format_datetime_calendar(event["datetime"])
+        date, time = format_full_datetime_calendar(event["datetime"])
         bot.send_message(
             chat_id,
-            "Добро пожаловать на регистрацию мероприятий Wunderpark! 🎉\n\n"
-            f"📅 Ближайшее мероприятие:\n"
-            f"— *{event['name']} ({date} в {time})*\n\n"  
-            f"📍 Место проведения:\n"
-            f"— *{event['location']}*\n\n"
-            "Пожалуйста, введите Ваше полное имя, если хотите записаться:",
+            "Привет! На связи Wunder-помощник! Со мной Вы сможете быстро и легко зарегистрироваться на мероприятия международной школы Wunderpark.\n\n"
+            f"📅 Ближайшее мероприятие: *{event['name']}*\n\n"
+            f"🕒 *Дата мероприятия:* {date} в {time}\n\n"
+            "Чтобы стать его участником, ответьте на несколько вопросов. Начнем?\n\n"
+            "Как Вас зовут? Укажите, пожалуйста, полное ФИО:",
             parse_mode="Markdown"
         )
 
@@ -476,7 +605,7 @@ def send_change_data_message(user_name, chat_id):
     btn_no_fix = types.InlineKeyboardButton("❌ Нет", callback_data="no_change")
     markup.add(btn_fix, btn_no_fix)
 
-    bot.send_message(chat_id, "Вы уже зарегистрированы на мероприятие — хотите изменить данные?", reply_markup=markup)
+    bot.send_message(chat_id, "Вы уже вводили данные — хотите изменить?", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data in ["change_data", "no_change"])
 def handle_change_data_response(call):
@@ -511,7 +640,7 @@ def get_phone(message):
         start(message)
         return
 
-    bot.send_message(chat_id, "Отлично, {}!\nТеперь укажите, пожалуйста, свой номер телефона:".format(message.text))
+    bot.send_message(chat_id, "Приятно познакомиться, {}! Укажите Ваш номер телефона (пример: +70000000000)".format(message.text))
     bot.register_next_step_handler(message, validate_phone)
 
 
@@ -528,14 +657,14 @@ def validate_phone(message):
 
     if re.fullmatch(r'\+7[0-9]{10}', phone):
         user_data[chat_id]['phone'] = phone
-        bot.send_message(chat_id, "Спасибо! Так же нам нужно знать Ваш e-mail:")
+        bot.send_message(chat_id, "Спасибо, а теперь укажите Вашу почту:")
         bot.register_next_step_handler(message, validate_email)
     else:
         bot.send_message(chat_id, "❌ Некорректный номер телефона. Формат: +71112223344. Попробуйте еще раз:")
         bot.register_next_step_handler(message, validate_phone)
 
 def validate_email(message):
-    """Проверяем правильно введена почта и переходим к следующему шагу"""
+    """Проверяем правильно ли введена почта и переходим к следующему шагу"""
     chat_id = message.chat.id
     email = message.text.strip()
 
@@ -562,7 +691,7 @@ def send_participation_options(message):
     btn2 = types.InlineKeyboardButton("Онлайн", callback_data="Онлайн")
     markup.add(btn1, btn2)
 
-    bot.send_message(chat_id, "Выберите форму участия:", reply_markup=markup)
+    bot.send_message(chat_id, "Пожалуйста, выберите формат участия в конференции:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data in ["Очно", "Онлайн"])
 def choose_format(call):
@@ -594,7 +723,7 @@ def send_track_options(chat_id):
     btn_track2 = types.InlineKeyboardButton("Родительский", callback_data="Родительский")
     track_markup.add(btn_track1, btn_track2)
 
-    bot.send_message(chat_id, "Выберите интересующий Вас трек:", reply_markup=track_markup)
+    bot.send_message(chat_id, "Укажите, какой трек Вас интересует:", reply_markup=track_markup)
 
 @bot.callback_query_handler(func=lambda call: call.data in ["Учительский", "Родительский"])
 def choose_track(call):
@@ -611,141 +740,340 @@ def choose_track(call):
 
         bot.edit_message_text("Вы выбрали трек.", chat_id, call.message.message_id, reply_markup=markup)
 
-        # FACE-TO-FACE
-        if user_data[chat_id]['participation'] == "Очно":
-            send_section_buttons(chat_id)
-
-        # ONLINE
-        else:
-            confirm_data(call)
+        send_section_buttons(chat_id)
     else:
         bot.answer_callback_query(call.id, "Вы уже выбрали трек.")
 
 
 
 # STEP 6
+def generate_callback_data(first_line, second_line):
+    """Хеш из данных"""
+    section_hash = hashlib.md5(f"{first_line}{second_line}".encode()).hexdigest()[:10]
+
+    if 'sections_data' not in user_data:
+        user_data['sections_data'] = {}
+
+    user_data['sections_data'][section_hash] = (first_line, second_line)
+    return f"section_{section_hash}"
+
+def generate_button_text(first_line, second_line):
+    """Текст копок с сокращённым хешем для уникальности"""
+    return f"{first_line} — {second_line}"
+
+def generate_confirm_button_text(first_line, second_line):
+    """Текст подтверждённых кнопок с сокращённым хешем для уникальности"""
+    return f"✅ {first_line} — {second_line}"
+
+
 def send_section_buttons(chat_id):
-    """Выбор секций мероприятия"""
+    """Инлайн-кнопки с секциями и их описанием"""
     event = get_nearest_event()
     if event:
-        sections = event['description'].strip().split('\n')
+        sections = event['description'].strip().split('\n\n')
 
-        markup = types.InlineKeyboardMarkup()
+        teacher_sections = []
+        parent_sections = []
+        teacher_online_sections = []
+        parent_online_sections = []
 
+        category = None
         for section in sections:
-            is_selected = "✅" if section in user_data[chat_id].get('sections', []) else ""
-            btn = types.InlineKeyboardButton(
-                f"{is_selected} {section}",
-                callback_data=section
+            if "(Учительский)" in section:
+                category = "Учительский"
+            elif "(Родительский)" in section:
+                category = "Родительский"
+            elif "(Онлайн учительский)" in section:
+                category = "Онлайн учительский"
+            elif "(Онлайн родительский)" in section:
+                category = "Онлайн родительский"
+
+            if category == "Учительский":
+                clean_section = section.replace("(Учительский)", "").strip()
+                teacher_sections.append(clean_section)
+            elif category == "Родительский":
+                clean_section = section.replace("(Родительский)", "").strip()
+                parent_sections.append(clean_section)
+            elif category == "Онлайн учительский":
+                clean_section = section.replace("(Онлайн учительский)", "").strip()
+                teacher_online_sections.append(clean_section)
+            elif category == "Онлайн родительский":
+                clean_section = section.replace("(Онлайн родительски)", "").strip()
+                parent_online_sections.append(clean_section)
+
+        track = user_data[chat_id].get('track')
+        formate = user_data[chat_id].get('participation')
+        sections_to_send = []
+
+        if formate == "Онлайн":
+            if track == "Учительский":
+                sections_to_send = teacher_online_sections
+            elif track == "Родительский":
+                sections_to_send = parent_online_sections
+            else:
+                sections_to_send = []
+
+        elif formate == "Очно":
+            if track == "Учительский":
+                sections_to_send = teacher_sections
+            elif track == "Родительский":
+                sections_to_send = parent_sections
+            else:
+                sections_to_send = []
+
+
+        # Кнопки
+        if sections_to_send:
+            full_message_text = "Выберите интересующую секцию (можно выбрать несколько):\n\n"
+            full_markup = types.InlineKeyboardMarkup(row_width=1)
+
+            for section in sections_to_send:
+                section_block = section.split('\n\n')
+
+                for section_stroke in section_block:
+                    section_lines = section_stroke.split('\n')
+
+                    if not section_lines:
+                        continue
+
+                    first_line = section_lines[0]  # Время и название секции
+                    second_line = section_lines[1] if len(section_lines) > 1 else "" # Описание
+                    second_line = re.split(r"\s+(?=http)", second_line)[0]
+
+                    if not second_line.strip():
+                        continue
+
+                    btn = types.InlineKeyboardButton(
+                        generate_button_text(first_line, second_line),
+                        callback_data=generate_callback_data(first_line, second_line)
+                    )
+
+                    full_markup.add(btn)
+                    full_message_text += "\n"
+
+            # Подтверждение выбора секций
+            if user_data[chat_id].get('sections', []):
+                btn_confirm = types.InlineKeyboardButton("Подтвердить выбор", callback_data="confirm_sections")
+                markup = types.InlineKeyboardMarkup()
+                markup.add(btn_confirm)
+
+                bot.send_message(
+                    chat_id,
+                    "Выберите секции и подтвердите свой выбор.",
+                    reply_markup=markup
+                )
+
+            bot.send_message(
+                chat_id,
+                full_message_text,
+                reply_markup=full_markup,
+                parse_mode="HTML"
             )
-            markup.add(btn)
 
-        if user_data[chat_id].get('sections', []):
-            btn_confirm = types.InlineKeyboardButton("✅ Подтвердить выбор", callback_data="confirm_sections")
-            markup.add(btn_confirm)
+        else:
+            bot.send_message(chat_id, "Секции не найдены для выбранного трека.")
 
-        bot.send_message(
-            chat_id,
-            "Отметьте секции, которые хотите посетить (можно выбрать несколько):",
-            reply_markup=markup
-        )
-
-@bot.callback_query_handler(func=lambda call: call.data in [section for section in get_nearest_event()['description'].strip().split('\n')])
+@bot.callback_query_handler(func=lambda call: call.data.startswith("section_"))
 def handle_section_selection(call):
-    """Логика кнопок, как чекбоксов и появление/скрытие кнопки «Подтвердить»"""
     chat_id = call.message.chat.id
 
-    if user_data[chat_id].get('sections_confirmed', False):
-        bot.answer_callback_query(call.id, "❌ Выбор секций уже подтвержден.")
+    # Проверяем, подтвержден ли уже выбор
+    if user_data.get(chat_id, {}).get('sections_confirmed', False):
+        bot.answer_callback_query(call.id, "❌ Выбор секций уже подтвержден.", show_alert=True)
         return
 
-    section = call.data
+    section_hash = call.data.replace("section_", "")
 
-    if 'sections' not in user_data[chat_id]:
+    if 'sections_data' not in user_data or section_hash not in user_data['sections_data']:
+        bot.answer_callback_query(call.id, "Ошибка: секция не найдена.")
+        return
+
+    first_line, second_line = user_data['sections_data'][section_hash]
+    section_full = f"{first_line} — {second_line}"
+
+    if 'sections' not in user_data.setdefault(chat_id, {}):
         user_data[chat_id]['sections'] = []
 
-    if section in user_data[chat_id]['sections']:
-        user_data[chat_id]['sections'].remove(section)
+    if section_full in user_data[chat_id]['sections']:
+        user_data[chat_id]['sections'].remove(section_full)
+        button_text = generate_button_text(first_line, second_line)
+        bot.answer_callback_query(call.id, f"Вы убрали:\n{section_full}")
     else:
-        user_data[chat_id]['sections'].append(section)
+        user_data[chat_id]['sections'].append(section_full)
+        button_text = generate_confirm_button_text(first_line, second_line)
+        bot.answer_callback_query(call.id, f"Вы выбрали:\n{section_full}")
 
-    event = get_nearest_event()
-    if event:
-        sections = event['description'].strip().split('\n')
+    # Обновляем кнопки
+    new_buttons = []
+    for button in call.message.reply_markup.keyboard:
+        btn = button[0]
+        if btn.callback_data == call.data:
+            new_buttons.append([types.InlineKeyboardButton(button_text, callback_data=call.data)])
+        else:
+            new_buttons.append([btn])
 
-        markup = types.InlineKeyboardMarkup()
-        for section in sections:
-            is_selected = "✅" if section in user_data[chat_id]['sections'] else ""
-            btn = types.InlineKeyboardButton(
-                f"{is_selected} {section}",
-                callback_data=section
-            )
-            markup.add(btn)
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup(new_buttons))
 
-        if user_data[chat_id]['sections']:
-            btn_confirm = types.InlineKeyboardButton(
-                "✅ Подтвердить выбор" if user_data[chat_id].get('sections_confirmed', False) else "Подтвердить выбор",
-                callback_data="confirm_sections"
-            )
-            markup.add(btn_confirm)
+    # Обновляем кнопку подтверждения
+    update_confirmation_button(chat_id)
 
-        bot.edit_message_text(
-            "Отметьте секции, которые хотите посетить (можно выбрать несколько):",
+def update_confirmation_button(chat_id):
+    """Обновляет кнопку подтверждения в зависимости от выбранных секций"""
+    has_selected = bool(user_data.get(chat_id, {}).get('sections', []))
+
+    if has_selected:
+        confirm_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        confirm_markup.add(types.KeyboardButton("✅ Подтвердить выбор"))
+
+        # Удаляем старое сообщение с кнопкой подтверждения, если есть
+        if 'confirm_message_id' in user_data.get(chat_id, {}):
+            try:
+                bot.delete_message(chat_id, user_data[chat_id]['confirm_message_id'])
+            except:
+                pass
+
+        # Отправляем новое сообщение с кнопкой подтверждения
+        msg = bot.send_message(
             chat_id,
-            call.message.message_id,
-            reply_markup=markup
+            "Нажмите «Подтвердить выбор» для продолжения.",
+            reply_markup=confirm_markup
         )
-
-@bot.callback_query_handler(func=lambda call: call.data == "confirm_sections")
-def confirm_sections(call):
-    """Действие при подтверждении выбора секций и переход к следующему шагу"""
-    chat_id = call.message.chat.id
-
-    if 'sections' in user_data[chat_id] and user_data[chat_id]['sections']:
-        user_data[chat_id]['sections_confirmed'] = True
-
-        markup = types.InlineKeyboardMarkup()
-        event = get_nearest_event()
-        if event:
-            sections = event['description'].strip().split('\n')
-
-            for section in sections:
-                btn = types.InlineKeyboardButton(
-                    f"✅ {section}" if section in user_data[chat_id]['sections'] else section,
-                    callback_data="section_already_chosen"
-                )
-                markup.add(btn)
-
-        btn_confirm = types.InlineKeyboardButton("✅ Подтвердить выбор", callback_data="do_nothing")
-        markup.add(btn_confirm)
-
-        bot.edit_message_text(
-            "Выбор секций подтверждён.",
-            chat_id,
-            call.message.message_id,
-            reply_markup=markup
-        )
-
-        confirm_data(call)
+        user_data[chat_id]['confirm_message_id'] = msg.message_id
     else:
-        bot.answer_callback_query(call.id, "❌ Выберите хотя бы одну секцию.")
+        # Если ничего не выбрано
+        if 'confirm_message_id' in user_data.get(chat_id, {}):
+            try:
+                bot.delete_message(chat_id, user_data[chat_id]['confirm_message_id'])
+                del user_data[chat_id]['confirm_message_id']
+            except:
+                pass
+            bot.send_message(chat_id, "Выберите секции", reply_markup=types.ReplyKeyboardRemove())
 
-@bot.callback_query_handler(func=lambda call: call.data == "section_already_chosen")
-def handle_inactive_sections(call):
-    """Делаем неактивными кнопки, если секции были подтверждены"""
-    chat_id = call.message.chat.id
+@bot.message_handler(func=lambda message: message.text == "✅ Подтвердить выбор")
+def handle_confirm_selection(message):
+    chat_id = message.chat.id
 
-    if user_data[chat_id].get('sections_confirmed', False):
-        bot.answer_callback_query(call.id, "Секции уже были выбраны.")
-    else:
+    if not user_data.get(chat_id, {}).get('sections'):
+        bot.send_message(chat_id, "❌ Нет выбранных секций для подтверждения.")
+        return
+
+    # Помечаем выбор как подтвержденный
+    user_data[chat_id]['sections_confirmed'] = True
+
+    # Удаляем кнопку подтверждения
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except:
         pass
+
+    # Делаем все инлайн-кнопки неактивными
+    if message.reply_to_message and message.reply_to_message.reply_markup:
+        disabled_buttons = []
+        for row in message.reply_to_message.reply_markup.keyboard:
+            disabled_row = []
+            for btn in row:
+                disabled_row.append(types.InlineKeyboardButton(
+                    text=btn.text,
+                    callback_data="disabled",
+                    disabled=True
+                ))
+            disabled_buttons.append(disabled_row)
+
+        try:
+            bot.edit_message_reply_markup(
+                chat_id,
+                message.reply_to_message.message_id,
+                reply_markup=types.InlineKeyboardMarkup(disabled_buttons)
+            )
+        except Exception as e:
+            print(f"Error disabling buttons: {e}")
+
+    # Уведомление о подтверждении
+    bot.send_message(
+        chat_id,
+        "✅ Выбор секций подтвержден.",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    formate = user_data[chat_id].get('participation')
+
+    try:
+        if formate == "Онлайн":
+            confirm_data(message)
+
+        elif formate == "Очно":
+            select_transport(message)
+    except Exception as e:
+        bot.send_message(chat_id, f"⚠️ Ошибка: {str(e)}")
+
+@bot.callback_query_handler(func=lambda call: call.data == "disabled")
+def handle_disabled_button(call):
+    """Обработчик для заблокированных кнопок"""
+    bot.answer_callback_query(call.id, "Выбор секций уже подтвержден.")
 
 
 
 # STEP 7
-def confirm_data(call):
-    """Подтверждение данных"""
+def select_transport(message_or_call):
+    """Выбор транспорта"""
+    if hasattr(message_or_call, 'message'):
+        chat_id = message_or_call.message.chat.id
+    else:
+        chat_id = message_or_call.chat.id
+
+    if chat_id not in user_data:
+        bot.send_message(chat_id, "⚠️ Ошибка: данные пользователя не найдены.")
+        return
+
+    markup = types.InlineKeyboardMarkup()
+
+    user_selections[chat_id]["transport"] = False
+    btn_track1 = types.InlineKeyboardButton("На такси", callback_data="На такси")
+    btn_track2 = types.InlineKeyboardButton("На своём автомобиле", callback_data="На своём автомобиле")
+    btn_track3 = types.InlineKeyboardButton("Нужен трансфер от метро Щукинская", callback_data="Нужен трансфер от метро Щукинская")
+    btn_track4 = types.InlineKeyboardButton("Нужен трансфер от метро Строгино", callback_data="Нужен трансфер от метро Строгино")
+
+    markup.add(btn_track1)
+    markup.add(btn_track2)
+    markup.add(btn_track3)
+    markup.add(btn_track4)
+
+    bot.send_message(chat_id, "Как будете добираться:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data in ["На такси", "На своём автомобиле", "Нужен трансфер от метро Щукинская", "Нужен трансфер от метро Строгино"])
+def choose_transport(call):
+    """Делаем кнопки неактивными после выбора и переходим к следующему шагу"""
     chat_id = call.message.chat.id
+    if not user_selections[chat_id]["transport"]:
+        user_data[chat_id]['transport'] = call.data
+        user_selections[chat_id]["transport"] = True
+
+        markup = types.InlineKeyboardMarkup()
+        btn_track1 = types.InlineKeyboardButton("✅ На такси", callback_data="На такси") if call.data == "На такси" else types.InlineKeyboardButton("На такси", callback_data="На такси")
+        btn_track2 = types.InlineKeyboardButton("✅ На своём автомобиле", callback_data="На своём автомобиле") if call.data == "На своём автомобиле" else types.InlineKeyboardButton("На своём автомобиле", callback_data="На своём автомобиле")
+        btn_track3 = types.InlineKeyboardButton("✅ Нужен трансфер от метро Щукинская", callback_data="Нужен трансфер от метро Щукинская") if call.data == "Нужен трансфер от метро Щукинская" else types.InlineKeyboardButton("Нужен трансфер от метро Щукинская", callback_data="Нужен трансфер от метро Щукинская")
+        btn_track4 = types.InlineKeyboardButton("✅ Нужен трансфер от метро Строгино", callback_data="Нужен трансфер от метро Строгино") if call.data == "Нужен трансфер от метро Строгино" else types.InlineKeyboardButton("Нужен трансфер от метро Строгино", callback_data="Нужен трансфер от метро Строгино")
+
+        markup.add(btn_track1)
+        markup.add(btn_track2)
+        markup.add(btn_track3)
+        markup.add(btn_track4)
+
+        bot.edit_message_text("Вы выбрали транспорт.", chat_id, call.message.message_id, reply_markup=markup)
+
+        confirm_data(call)
+    else:
+        bot.answer_callback_query(call.id, "Вы уже выбрали транспорт.")
+
+
+
+# STEP 8
+def confirm_data(message_or_call):
+    """Подтверждение данных"""
+    if hasattr(message_or_call, 'message'):
+        chat_id = message_or_call.message.chat.id
+    else:
+        chat_id = message_or_call.chat.id
 
     if chat_id not in user_data:
         bot.send_message(chat_id, "⚠️ Ошибка: данные пользователя не найдены.")
@@ -761,12 +1089,17 @@ def confirm_data(call):
     date, time = format_datetime_calendar(event["datetime"])
 
     try:
-        # FACE-TO-FACE
-        if user_data[chat_id]['participation'] == "Очно":
-            sections_text = "\n".join(user_data[chat_id]['sections']) if 'sections' in user_data[chat_id] else "Не выбрано"
+        sections_text = "\n".join(user_data[chat_id].get('sections', [])) if 'sections' in user_data[chat_id] else "Не выбрано"
+
+        formate = user_data[chat_id].get('participation')
+        transport = ''
+        data_text = ''
+
+        if formate == "Онлайн":
+            transport = ''
 
             data_text = (
-                f"📋 <u>Проверьте введенные данные:</u>\n\n"
+                f"📋 <u>Проверьте введённые данные:</u>\n\n"
                 f"<b>Имя:</b> {user_data[chat_id]['name']}\n"
                 f"<b>Телефон:</b> {user_data[chat_id]['phone']}\n"
                 f"<b>E-mail:</b> {user_data[chat_id]['email']}\n\n"
@@ -776,53 +1109,39 @@ def confirm_data(call):
                 f"<b>Вcё верно?</b>"
             )
 
-            # FOR DB
-            user_data_entry = {
-                'name': user_data[chat_id]['name'],
-                'phone': user_data[chat_id]['phone'],
-                'email': user_data[chat_id]['email'],
-                'participation': user_data[chat_id]['participation'],
-                'track': user_data[chat_id]['track'],
-                'sections': sections_text,
-                'status': 'pending',
-                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'chat_id': chat_id,
-                'event': name,
-                'id': chat_id,
-                'location': location,
-                'date_event': date,
-                'time_event': time
-            }
+        elif formate == "Очно":
+            transport = user_data[chat_id]['transport']
 
-        # ONLINE
-        else:
             data_text = (
-                f"📋 <u>Проверьте введенные данные:</u>\n\n"
+                f"📋 <u>Проверьте введённые данные:</u>\n\n"
                 f"<b>Имя:</b> {user_data[chat_id]['name']}\n"
                 f"<b>Телефон:</b> {user_data[chat_id]['phone']}\n"
                 f"<b>E-mail:</b> {user_data[chat_id]['email']}\n\n"
                 f"<b>Форма участия:</b> {user_data[chat_id]['participation']}\n"
                 f"<b>Трек:</b> {user_data[chat_id]['track']}\n\n"
-                f"<b>Всё верно?</b>"
+                f"<b>Секции:</b> \n{sections_text}\n\n"
+                f"<b>Транспорт:</b> {user_data[chat_id]['transport']}\n\n"
+                f"<b>Вcё верно?</b>"
             )
 
-            # FOR DB
-            user_data_entry = {
-                'name': user_data[chat_id]['name'],
-                'phone': user_data[chat_id]['phone'],
-                'email': user_data[chat_id]['email'],
-                'participation': user_data[chat_id]['participation'],
-                'track': user_data[chat_id]['track'],
-                'sections': '',
-                'status': 'pending',
-                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'chat_id': chat_id,
-                'event': name,
-                'id': chat_id,
-                'location': location,
-                'date_event': date,
-                'time_event': time
-            }
+        # FOR DB
+        user_data_entry = {
+            'name': user_data[chat_id]['name'],
+            'phone': user_data[chat_id]['phone'],
+            'email': user_data[chat_id]['email'],
+            'participation': user_data[chat_id]['participation'],
+            'track': user_data[chat_id]['track'],
+            'sections': sections_text,
+            'status': 'pending',
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'chat_id': chat_id,
+            'event': name,
+            'id': chat_id,
+            'location': location,
+            'date_event': date,
+            'time_event': time,
+            'transport': transport
+        }
 
         # SAVE TO DB
         update_user_data(user_data_entry)
@@ -841,7 +1160,7 @@ def confirm_data(call):
 
 
 
-# STEP 8
+# STEP 9
 @bot.callback_query_handler(func=lambda call: call.data in ["confirm", "restart"])
 def confirmation_handler(call):
     """Действие на подтверждение/изменение данных и согласие на обработку персональных данных"""
@@ -856,9 +1175,11 @@ def confirmation_handler(call):
 
     # START OVER
     if call.data == "restart":
-        user_selections[chat_id] = {"participation": False, "track": False, "sections": False}
-        user_name = user_data[chat_id].get('name', '')
-        get_phone(user_name, call.message)
+        user_data[chat_id] = {}
+        user_selections[chat_id] = {"participation": False, "track": False, "sections": False, "transport": False}
+        bot.answer_callback_query(call.id, "Введите новые данные.")
+        bot.send_message(chat_id, "Тогда давайте начнём с начала.\nУкажите новые имя и фамилию:")
+        bot.register_next_step_handler_by_chat_id(chat_id, get_phone)
         return
 
     # CONFIRM
@@ -868,7 +1189,7 @@ def confirmation_handler(call):
         # CONFIDENTIALITY POLICY
         markup = types.InlineKeyboardMarkup()
         btn_agree = types.InlineKeyboardButton("Согласен", callback_data="agree")
-        btn_policy = types.InlineKeyboardButton("📄 Политика конфиденциальности", url="https://example.com")
+        btn_policy = types.InlineKeyboardButton("📄 Политика конфиденциальности", url="https://wunderpark.ru/polz_soglashenie/")
         markup.add(btn_policy)
         markup.add(btn_agree)
 
@@ -881,7 +1202,7 @@ def confirmation_handler(call):
 
 
 
-# STEP 9
+# STEP 10
 @bot.callback_query_handler(func=lambda call: call.data == "agree")
 def final_confirmation(call):
     """Обновление данных и уведомление об успешной регистрации"""
@@ -903,43 +1224,32 @@ def final_confirmation(call):
             location = event["location"]
             date, time = format_datetime_calendar(event["datetime"])
 
-            # UPDATE DB FOR FACE-TO-FACE
-            if user_data[chat_id]['participation'] == "Очно":
-                update_user_data({
-                    'name': user_data[chat_id]['name'],
-                    'phone': user_data[chat_id]['phone'],
-                    'email': user_data[chat_id]['email'],
-                    'participation': user_data[chat_id]['participation'],
-                    'track': user_data[chat_id]['track'],
-                    'sections': ", ".join(user_data[chat_id]['sections']),
-                    'status': 'Confirmed',
-                    'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'chat_id': chat_id,
-                    'event': name,
-                    'id': chat_id,
-                    'location': location,
-                    'date_event': date,
-                    'time_event': time
-                })
+            formate = user_data[chat_id].get('participation')
+            transport = ''
 
-            # UPDATE DB FOR ONLINE
-            else:
-                update_user_data({
-                    'name': user_data[chat_id]['name'],
-                    'phone': user_data[chat_id]['phone'],
-                    'email': user_data[chat_id]['email'],
-                    'participation': user_data[chat_id]['participation'],
-                    'track': user_data[chat_id]['track'],
-                    'sections': '',
-                    'status': 'confirmed',
-                    'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'chat_id': chat_id,
-                    'event': name,
-                    'id': chat_id,
-                    'location': location,
-                    'date_event': date,
-                    'time_event': time
-                })
+            if formate == "Онлайн":
+                transport = ''
+
+            elif formate == "Очно":
+                transport = user_data[chat_id]['transport']
+
+            update_user_data({
+                'name': user_data[chat_id]['name'],
+                'phone': user_data[chat_id]['phone'],
+                'email': user_data[chat_id]['email'],
+                'participation': user_data[chat_id]['participation'],
+                'track': user_data[chat_id]['track'],
+                'sections': ", ".join(user_data[chat_id]['sections']),
+                'status': 'Confirmed',
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'chat_id': chat_id,
+                'event': name,
+                'id': chat_id,
+                'location': location,
+                'date_event': date,
+                'time_event': time,
+                'transport': transport
+            })
 
     except Exception as e:
         print(f"Ошибка обновления данных: {e}")
@@ -952,20 +1262,30 @@ def final_confirmation(call):
     if event:
         maps_link = get_yandex_maps_link(event['location'])
         markup = types.InlineKeyboardMarkup()
-        btn_map = types.InlineKeyboardButton("Посмотреть на карте", url=maps_link)
+        btn_map = types.InlineKeyboardButton("Найти на карте", url=maps_link)
         markup.add(btn_map)
 
-        date, time = format_datetime_calendar(event["datetime"])
+        date, time = format_full_datetime_calendar(event["datetime"])
+        formate = user_data[chat_id].get('participation')
 
-        bot.send_message(
-            chat_id,
-            "🎉 Спасибо за регистрацию!\n\n"
-            f"Вы записались на мероприятие:\n"
-            f"— *{event["name"]}*\n\n"
-            f"Мероприятие пройдёт:\n\n"
-            f"🕓 *{date} в {time}*\n\n"
-            f"📍 *{event["location"]}*\n\n",
-            parse_mode="Markdown", reply_markup=markup)
+        # Выбираем секции в зависимости от формата
+        if formate == "Онлайн":
+            bot.send_message(
+                chat_id,
+                f"Спасибо, что решили присоединиться к нашей Wunder-конференции!\n\n"
+                f"В день мероприятия я пришлю Вам ссылку на выбранные Вами онлайн-трансляции.\n\n"
+                f"Напомню, это будет *{date}*. Начало события: *{time}*\n\n"
+                f"Отличного дня и хорошего настроения!",
+                parse_mode="Markdown")
+
+        elif formate == "Очно":
+            bot.send_message(
+                chat_id,
+                f"Спасибо, что решили присоединиться к нашей Wunder-конференции!\n\n"
+                f"Ждем Вас *{date}* в *{time}* в *{event["location"]}*. \n"
+                f"Приходите на конференцию в приятной компании — пригласите с собой друзей и коллег, ведь вместе всегда интереснее.\n\n"
+                f"Все подробности я расскажу Вам позже отдельным сообщением. А пока предлагаю посмотреть, как нас найти:\n\n",
+                parse_mode="Markdown", reply_markup=markup)
 
 
 
@@ -996,8 +1316,9 @@ def handle_inactive_buttons(call):
 
 # CHECK DAY FOR NOTIFICATION AND SURVEY
 schedule.every(30).minutes.do(send_event_surveys)
-schedule.every().day.at("19:00").do(send_event_reminders)
+schedule.every(4).hours.do(send_event_reminders)
 threading.Thread(target=schedule_checker, daemon=True).start()
+
 
 
 
